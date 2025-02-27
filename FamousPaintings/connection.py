@@ -3,6 +3,7 @@ from sqlalchemy import create_engine
 
 datasets = ["image_link","museum_hours","museum","product_size","subject","work","artist","canvas_size"]
 
+
 DATABASE_TYPE = 'postgresql'
 DBAPI = 'psycopg2'
 ENDPOINT = 'localhost'  # Localhost
