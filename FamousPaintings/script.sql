@@ -152,11 +152,13 @@
 -- q14. Display the 3 least popular canva sizes
 -- select * from canvas_size;
 -- select * from product_size;
-with temp as (
-select size_id,count(*) as counts from product_size  group by size_id
-)
-select t.size_id,c.label,c.width,c.height,t.counts
-from canvas_size c join temp t on c.size_id::text=t.size_id;
+-- with temp as (
+-- select size_id,count(*) as counts from product_size  group by size_id
+-- )
+-- select t.size_id,c.label,c.width,c.height,t.counts
+-- from canvas_size c join temp t on c.size_id::text=t.size_id
+-- order by t.counts;
+
 
 
 
@@ -169,5 +171,134 @@ from canvas_size c join temp t on c.size_id::text=t.size_id;
 -- 		join canvas_size cs on cs.size_id::text = ps.size_id
 -- 		group by cs.size_id,cs.label) x
 -- 	where x.ranking<=3;
+
+
+
+-- q15.Which museum is open for the longest during a day. 
+-- Dispay museum name, state and hours open and which day?
+-- with temp as (
+-- select *, to_timestamp(close,'HH:MI PM') - to_timestamp(open,'HH:MI AM') as duration
+--  from museum_hours
+-- )
+-- select t.*,m.name,m.state from 
+-- temp t join museum m using (museum_id) order by t.duration desc;
+
+
+-- q16. Which museum has the most no. of most popular painting style?
+-- with temp as(
+-- select 
+-- w.museum_id,w.style,
+-- ROW_NUMBER() OVER (PARTITION BY w.style ORDER BY w.museum_id) as ranks,
+-- COUNT(*) OVER (PARTITION BY w.style) as style_count
+-- from work w join museum m using (museum_id)
+-- where style is not null 
+-- order by w.museum_id
+-- )
+-- select * from temp;
+
+
+-- with pop_style as 
+-- 			(select style
+-- 			,rank() over(order by count(1) desc) as rnk
+-- 			from work
+-- 			group by style),
+-- 		cte as
+-- 			(select w.museum_id,m.name as museum_name,ps.style, count(1) as no_of_paintings
+-- 			,rank() over(order by count(1) desc) as rnk
+-- 			from work w
+-- 			join museum m on m.museum_id=w.museum_id
+-- 			join pop_style ps on ps.style = w.style
+-- 			where w.museum_id is not null
+-- 			and ps.rnk=1
+-- 			group by w.museum_id, m.name,ps.style)
+-- 	select museum_name,style,no_of_paintings
+-- 	from cte 
+-- 	where rnk=1;
+
+
+-- q17. Identify the artists whose paintings are displayed in multiple countries.
+-- with temp as (
+-- select distinct a.full_name as artist,w.name as painting,m.name as museum ,m.country
+-- from artist a
+-- join work w on a.artist_id=w.artist_id
+-- join museum m on w.museum_id=m.museum_id
+-- )
+-- select artist,count(1) as no_of_countries from temp 
+-- group by artist 
+-- having count(1)>1
+-- order by 2 desc;
+
+
+-- with cte as
+-- 		(select distinct a.full_name as artist
+-- 		--, w.name as painting, m.name as museum
+-- 		, m.country
+-- 		from work w
+-- 		join artist a on a.artist_id=w.artist_id
+-- 		join museum m on m.museum_id=w.museum_id)
+-- 	select artist,count(1) as no_of_countries
+-- 	from cte
+-- 	group by artist
+-- 	having count(1)>1
+-- 	order by 2 desc;
+
+
+-- q18. Display the country and the city with most no of museums. Output 2 seperate
+-- columns to mention the city and country. If there are multiple value, seperate them
+-- with comma.
+
+with cte_country as(
+select country,count(1),rank() over(order by count(1) desc) as country_rank
+from 
+museum group by country 
+order by 2 desc
+),
+cte_city as(
+select city,count(1),rank() over(order by count(1) desc) as city_rank
+from 
+museum group by city 
+order by 2 desc
+)
+select string_agg(distinct cte_country.country,','),string_agg(cte_city.city,',') from 
+cte_country
+cross join cte_city
+where country_rank=1
+and city_rank=1;
+
+-- select city,count(1) from 
+-- museum group by city 
+-- order by 2 desc;
+
+
+
+
+-- q.19 Identify the artist and the museum where the most expensive and least expensive
+-- painting is placed. Display the artist name, sale_price, painting name, museum
+-- name, museum city and canvas label
+select * from 
+product_size where sale_price = (select max(sale_price) from product_size)
+union
+(select * from 
+product_size where sale_price = (select min(sale_price) from product_size)
+ limit 1);
+
+
+-- q.20 Which country has the 5th highest no of paintings?
+with cte as 
+		(select m.country, count(1) as no_of_Paintings
+		, rank() over(order by count(1) desc) as rnk
+		from work w
+		-- selecting museums that has atleast one painting
+		join museum m on m.museum_id=w.museum_id
+		group by m.country)
+	select country, no_of_Paintings
+	from cte 
+	where rnk=5;
+
+
+
+
+
+
 
 
