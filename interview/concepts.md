@@ -341,3 +341,354 @@ Example Command:
 Bash
 
 pg_basebackup -D /backup_path -Fp -Xs -P
+
+## Q: Database performance tuning fundamentals
+
+A:
+Database performance tuning is the art of making your database respond faster and handle more simultaneous users. It usually focuses on reducing I/O (Disk access) and CPU usage.
+
+Here are the fundamental pillars of tuning, ranked by impact.
+
+1. Indexing (The "Quick Win")
+   Indexing is the single most effective way to improve read performance. Without an index, the database must perform a Sequential Scan (read every single row in the table) to find data.
+
+How it works: An index is a separate data structure (usually a B-Tree) that acts like a "Table of Contents" for your data. It allows the database to jump directly to the specific row.
+
+The Trade-off: Indexes speed up Reads (SELECT) but slow down Writes (INSERT, UPDATE) because the database must update the table and the index every time.
+
+Best Practices:
+
+Index columns used frequently in WHERE, JOIN, and ORDER BY clauses.
+
+Composite Indexes: If you often query WHERE first_name = 'X' AND last_name = 'Y', create a single index on (first_name, last_name), not two separate ones.
+
+Avoid Over-indexing: Don't index every column. It wastes space and kills write performance.
+
+2. Query Optimization (The "Code" Layer)
+   Even with great indexes, a poorly written query can kill performance.
+
+Avoid SELECT \*: Only fetch the columns you need. Fetching extra columns consumes network bandwidth and prevents "Index Only Scans" (where the DB finds data purely in the index without touching the main table).
+
+Analyze Your Queries: Use the EXPLAIN (or EXPLAIN ANALYZE in Postgres) command. It shows you the Execution Plan—exactly how the database intends to find your data.
+
+Look for: "Seq Scan" on large tables (Bad).
+
+Look for: High "Cost" numbers.
+
+N+1 Problem: Common in ORMs (like Hibernate/Prisma).
+
+Bad: Fetch 100 users, then run 100 separate queries to get their addresses.
+
+Good: Fetch 100 users and their addresses in one query using a JOIN.
+
+3. Schema Design (The Structure)
+   How you organize data affects speed.
+
+Normalization (3NF): Splitting data into many small, non-redundant tables.
+
+Pros: Saves space, data consistency.
+
+Cons: Requires many JOINs, which can be slow.
+
+Denormalization: Intentionally duplicating data to avoid joins.
+
+Example: Storing author_name inside the Books table instead of joining the Authors table every time.
+
+Pros: Extremely fast reads (no joins).
+
+Cons: Harder to maintain consistency (if the author changes their name, you must update 1,000 book rows).
+
+4. Configuration & Caching (The "Engine" Tuning)
+   Database software (Postgres, MySQL) comes with default settings often tuned for small machines. You need to adjust them for your hardware.
+
+Buffer Pool / Shared Buffers: This is the memory area where the DB caches data pages.
+
+Goal: You want your Cache Hit Ratio to be near 99%. If it drops, it means the DB is reading from the slow hard drive too often.
+
+Tuning: Allocate significantly more RAM to the Shared Buffers (e.g., 25-40% of system RAM).
+
+Connection Pooling:
+
+Establishing a connection to a DB is expensive (handshakes, authentication).
+
+Use a pooler (like PgBouncer for Postgres) to keep a set of connections open and reuse them.
+
+5. Partitioning & Sharding (The "Nuclear Option")
+   When a table gets too massive (e.g., billions of rows), standard indexing isn't enough.
+
+Partitioning: Splitting one large table into smaller physical files based on a rule (e.g., Orders_2023, Orders_2024). The application still sees it as one "Orders" table, but the DB only scans the relevant file.
+
+Sharding: Distributing data across multiple servers.
+
+Server A: Users A-M.
+
+Server B: Users N-Z.
+
+This provides infinite horizontal scaling but adds massive complexity to the application logic.
+
+## Q: ACID properties and their importance
+
+A:
+ACID is a set of guiding principles that ensure database transactions are processed reliably. It is the gold standard for relational databases (like PostgreSQL, MySQL, Oracle) and is critical for systems where data integrity is non-negotiable (e.g., Banking, Inventory Management).
+
+A Transaction is a sequence of operations performed as a single logical unit of work.
+
+Here is the breakdown of each property:
+
+1. Atomicity (All or Nothing)
+   Atomicity guarantees that a transaction is treated as a single "unit." Either all steps in the transaction succeed, or none of them do.
+
+The Rule: If any part of the transaction fails (e.g., power loss, crash, error), the database must roll back the entire state to how it was before the transaction started. Partial updates are not allowed.
+
+Example: You transfer $100 from Account A to Account B.
+
+Debit $100 from A.
+
+(System Crash)
+
+Credit $100 to B.
+
+Without Atomicity: Money leaves A but never reaches B. It vanishes.
+
+With Atomicity: Since step 3 failed, step 1 is undone. Money returns to A.
+
+2. Consistency (Rules Must Be Followed)
+   Consistency ensures that a transaction brings the database from one valid state to another valid state, maintaining all defined rules (constraints, cascades, triggers).
+
+The Rule: Data must respect all integrity constraints (like Primary Keys, Foreign Keys, CHECK constraints).
+
+Example: Your database has a rule: Balance cannot be negative.
+
+User A has $50. They try to transfer $100.
+
+Atomicity might try to execute it, but Consistency checks the rule. Since $50 - $100 = -$50 (invalid), the transaction is rejected immediately. The database remains in the last "good" state.
+
+3. Isolation (Do Not Interfere)
+   Isolation ensures that concurrently executing transactions do not affect each other. Each transaction should feel like it is the only one running on the system.
+
+The Rule: If two people try to modify the same data at the same time, they shouldn't see each other's "half-finished" work.
+
+Example:
+
+Transaction X is calculating the "Total Bank Assets" (Sum of all accounts).
+
+Transaction Y is transferring $100 from Account A to Account B.
+
+Without Isolation: Transaction X might sum Account A (after debit) but Account B (before credit), resulting in $100 "missing" from the total report.
+
+With Isolation: Transaction X either sees the data before Y started or after Y finished, never in the middle.
+
+4. Durability (Written in Stone)
+   Durability guarantees that once a transaction has been "Committed" (confirmed success), it will remain saved even in the event of a system failure (power outage, crash).
+
+The Rule: Successful data must be stored in non-volatile memory (HDD/SSD).
+
+Mechanism: Databases use a Write-Ahead Log (WAL). They write the "intent" to disk immediately. Even if the database crashes before updating the actual table file, it can replay the log upon restart to recover the data.
+
+Example: You buy a flight ticket. The screen says "Booking Confirmed." One second later, the airline's server center loses power. When the power comes back, your booking must still exist.
+
+Why is ACID Important?
+Data Integrity: In financial systems, losing a single penny or creating money out of thin air is unacceptable. ACID prevents this.
+
+Concurrency Management: Modern apps have thousands of users. ACID (specifically Isolation) prevents race conditions where two users buy the same "last seat" on a plane.
+
+Error Handling: It simplifies development. You don't need to write complex code to "undo" partial changes manually; the database engine handles rollbacks automatically.
+
+## Q: Referential integrity constraints
+
+A:
+Referential Integrity is a database concept that ensures relationships between tables remain consistent. It guarantees that a reference from one table (Child) to another table (Parent) is always valid, preventing "orphan" records or invalid links.
+
+It is primarily enforced using Foreign Keys.
+
+The Core Rule
+If Table A (Child) refers to Table B (Parent), the value in Table A must correspond to an existing row in Table B.
+
+Parent Table: Departments (ID 1: "HR", ID 2: "IT")
+
+Child Table: Employees ("John" is in Dept ID 1)
+
+Violations prevented by Referential Integrity:
+
+Invalid Insert: You cannot add "Sarah" to Dept ID 99 because Dept 99 does not exist.
+
+Invalid Delete: You cannot delete the "HR" department if "John" is still assigned to it (unless a specific action is defined).
+
+Constraint Actions (What happens on Delete/Update?)
+When you define a Foreign Key, you decide what the database should do if someone tries to change or delete the referenced Parent data.
+
+1. NO ACTION / RESTRICT (Default)
+   The strict approach. The database strictly forbids the change.
+
+Scenario: You try to delete the "HR" department.
+
+Result: The database throws an Error and stops the deletion because Employees are still using that ID.
+
+2. CASCADE (The Domino Effect)
+   The automatic cleanup. Changes to the Parent are mirrored to the Child.
+
+Scenario: You delete the "HR" department.
+
+Result: The "HR" row is deleted, AND every Employee assigned to "HR" is also automatically deleted.
+
+Use Case: Deleting a Post should automatically delete all its Comments.
+
+3. SET NULL (Preserve the Child)
+   The safe disconnect. If the Parent is removed, the Child stays but loses its link.
+
+Scenario: You delete the "HR" department.
+
+Result: The "HR" row is deleted. The Employees remain, but their dept_id becomes NULL.
+
+Use Case: If a Manager leaves, you delete their user account, but the Project they managed remains (with manager_id set to NULL).
+
+4. SET DEFAULT
+   If the Parent is removed, the Child is reassigned to a default value (e.g., Dept ID 0: "General Pool").
+
+CREATE TABLE employees (
+id SERIAL PRIMARY KEY,
+name TEXT NOT NULL,
+dept_id INT,
+
+    -- The Referential Integrity Constraint
+    FOREIGN KEY (dept_id)
+    REFERENCES departments(id)
+    ON DELETE CASCADE  -- Rule: If Dept is deleted, delete these employees
+    ON UPDATE RESTRICT -- Rule: If Dept ID changes, block the change
+
+);
+
+## Q: Database normalization and normal forms
+
+A:
+Database Normalization is the process of organizing a database to reduce redundancy (duplicate data) and improve data integrity.
+
+The goal is to ensure that every piece of data is stored in exactly one place. If you change a customer's address, you should only have to update one row, not 1,000 order rows.
+
+We achieve this by adhering to a series of rules called Normal Forms.
+Form Rule Fix
+1NF No Lists/Arrays Create new rows for list items.
+2NF No Partial Keys Move data related to part of the key to a new table.
+3NF No Transitive Keys Move data related to non-key columns to a new table.
+
+## Q: Connection pooling concepts
+
+A:
+What is Connection Pooling?
+Connection Pooling is a technique used to maintain a cache of established database connections that can be reused for future requests, rather than creating a new connection every time data is needed.
+
+Think of it like a Taxi Stand at an airport.
+
+Without Pooling: Every passenger has to build their own car from scratch, drive it, and then destroy it after one trip. (Slow, expensive).
+
+With Pooling: A set of 10 taxis is already waiting. You hop in, take the ride, and then the taxi returns to the stand for the next passenger. (Fast, efficient).
+
+1. The Problem: Why not just open a new connection?
+   Opening a database connection is one of the most expensive operations in backend engineering. It involves a "heavy handshake."
+
+Every time your app says db.connect(), the following happens:
+
+Network Layer: Open a TCP socket.
+
+Handshake: 3-Way TCP Handshake (Syn, Syn-Ack, Ack).
+
+Security: SSL/TLS negotiation (Key exchange).
+
+Authentication: Database checks username/password.
+
+Memory Allocation: Database allocates RAM for this user session.
+
+The Impact: If this takes 200ms, and your query takes 10ms, your API is 20x slower just because of the connection setup.
+
+2. How Connection Pooling Works
+   A "Pool Manager" sits between your application code and the database.
+
+Startup: When your application starts, the pool opens a fixed number of connections (e.g., 5) and keeps them open.
+
+Borrow: When a user request comes in, the app asks the pool: "Do you have a free connection?"
+
+The pool hands over one of the idle connections.
+
+Execute: The app runs the SQL query.
+
+Return: When the query finishes, the app does not close the connection. Instead, it "returns" it to the pool.
+
+Reuse: That same connection is immediately given to the next user request. 4. Client-Side vs. Server-Side Pooling
+A. Application Side (Library Level)
+Where: Inside your code (Node.js pg-pool, Java HikariCP).
+
+Pros: Easy to set up.
+
+Cons: If you have 50 microservice instances and each has a pool of 10, you have 500 open connections. This can crash the database.
+
+B. Middleware Side (The External Pooler)
+Where: A separate server like PgBouncer (for Postgres) or ProxySQL (for MySQL).
+
+How it works: All microservices connect to PgBouncer. PgBouncer manages the actual few connections to the real database.
+
+Pros: Supports thousands of concurrent client connections while keeping the database load low. Essential for serverless functions (Lambdas).
+
+## Q:External tables and their uses
+
+A:What are External Tables?
+An External Table is a database table where the data is not stored inside the database's internal storage (files like Heap or B-Tree). Instead, the data remains in raw files (CSV, JSON, Parquet, Avro) on the file system, an S3 bucket, or another remote server.
+
+The Concept: Think of a regular table as "Downloading a movie" to your hard drive. You own it, you can edit it, and it loads fast. Think of an external table as "Streaming a movie". The movie lives on Netflix's server; you just view it through your screen.
+
+When you run SELECT \* FROM my_external_table, the database engine goes out, reads the raw file line-by-line, parses it on the fly, and shows you the results.
+
+Key Characteristics
+Metadata Only: The database only stores the structure (column names, data types) and the file path. It does not store the actual rows.
+
+Read-Only (Usually): Most external tables are read-only. You cannot INSERT or UPDATE them; you can only query them.
+
+No Indexes: Since the database doesn't manage the file, it usually cannot build indexes on it. This means queries are generally slower (Full Table Scans).
+
+Common Use Cases
+
+1. The ETL Staging Area (Loading Data)
+   This is the most common use. You have a massive 50GB CSV file from a client.
+
+Old Way: Write a script to parse the CSV and insert rows one by one (Slow).
+
+External Table Way:
+
+Define an external table pointing to the CSV.
+
+Run INSERT INTO real_table SELECT \* FROM external_table.
+
+The database handles the reading and loading internally, which is highly optimized.
+
+2. Data Lake Querying (The "Modern" Way)
+   In cloud warehouses (Snowflake, BigQuery, Redshift Spectrum), you dump terabytes of historical logs into Amazon S3 (cheap storage).
+
+Instead of loading all that old data into the expensive database, you create External Tables pointing to the S3 bucket.
+
+You can join your "Live Data" (Internal Table) with your "Archive Data" (External Table) in a single SQL query.
+
+3. Ad-Hoc Analysis
+   A data scientist drops a JSON file on the server. Instead of building a formal pipeline to import it, you just wrap an external table around it, query it to get the answer, and then drop the table. The file remains untouched.
+   1. Enable the Extension
+
+SQL
+
+CREATE EXTENSION file_fdw; 2. Create a "Server" (The Connection)
+
+SQL
+
+CREATE SERVER import_server FOREIGN DATA WRAPPER file_fdw; 3. Define the External Table
+
+SQL
+
+CREATE FOREIGN TABLE external_users (
+id int,
+name text,
+email text
+)
+SERVER import_server
+OPTIONS ( filename '/tmp/users.csv', format 'csv' ); 4. Query it
+
+SQL
+
+-- Postgres goes to the disk, reads the CSV, and filters it.
+SELECT \* FROM external_users WHERE id > 100;
