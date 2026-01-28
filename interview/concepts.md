@@ -692,3 +692,170 @@ SQL
 
 -- Postgres goes to the disk, reads the CSV, and filters it.
 SELECT \* FROM external_users WHERE id > 100;
+
+## Q: How would you construct a database for 1000 users and determine its size?
+
+A:
+For 1,000 users, the database will be trivially small (likely smaller than a single high-quality photo on your phone). However, the process of calculating the size is identical whether you have 1,000 or 1 billion users.
+
+Here is how you construct the schema and calculate the storage capacity requirements (Capacity Planning).
+
+Phase 1: Constructing the Schema (The Blueprint)
+To determine size, we first need to know exactly what we are storing. Let's design a standard Users table for a web application.
+SQL
+CREATE TABLE users (
+id BIGSERIAL PRIMARY KEY, -- 8 bytes
+username VARCHAR(50), -- Variable (Avg 15 bytes)
+email VARCHAR(100), -- Variable (Avg 25 bytes)
+password_hash CHAR(60), -- Fixed (60 bytes for Bcrypt)
+bio TEXT, -- Variable (Avg 100 bytes)
+is_active BOOLEAN, -- 1 byte
+created_at TIMESTAMP -- 8 bytes
+);
+
+Phase 2: The Math (Calculating Row Size)
+Database size calculation is essentially:
+$$\text{Total Size} = (\text{Avg Row Size} \times \text{Number of Rows}) + \text{Index Overhead}$$
+
+1. Calculate Raw Data per Row
+   We estimate the average length of data, not the maximum = 217 bytes.
+2. Add Database OverheadDatabase engines (like Postgres or MySQL) wrap every row in metadata (headers) to track transaction visibility (MVCC) and null values.Row Header: ~23 bytes (Postgres default).Alignment Padding: Databases align data to 8-byte boundaries. Let's add ~8 bytes of padding space.Total Physical Row Size: 217 + 23 + 8 = 248 bytes
+   Phase 3: Total Size Calculation
+   Now we multiply by your user count.
+   1000\*248 bytes = 242KB
+3. Index Size (The Hidden Cost): Indexes take up extra space to make searches fast. You usually have at least two indexes:
+
+Primary Key (B-Tree on id): ~30 KB
+
+Unique Index (B-Tree on email): ~40 KB
+
+Total Index Size: ~70 KB.
+Grand Total:
+242 + 70 = 312 KB
+Conclusion: The Reality Check
+For 1,000 users, your database size is 0.3 MB.
+
+Storage Impact: Negligible. You could host this on a 15-year-old USB drive.
+
+Performance Impact: Negligible. The entire database fits into the L3 CPU Cache of a modern processor. You will not need sharding, partitioning, or complex caching layers.
+
+Important Note on Scaling: If this scales to 1 Million Users, the math stays the same:
+= 248MB
+
+## Q: In which scenarios would you use clusters instead of replication?
+
+A:
+In system design, when people ask "Replication vs. Clustering," they are usually comparing:
+
+Replication (Copying): Storing the same data on multiple machines (e.g., Master-Slave).
+
+Clustering / Sharding (Splitting): Distributing different parts of the data across multiple machines.
+
+Here are the specific scenarios where you must move from simple Replication to a Cluster (Sharding) architecture.
+
+1. Scenario: You hit the "Write Wall" (Write Scalability)
+
+   - The Cluster Solution: You use a Sharded Cluster.
+   - You split the users: Users A-M go to Server 1, Users N-Z go to Server 2.
+     Now you have two writers. You have effectively doubled your write capacity.
+
+2. Scenario: Your Data exceeds Single Disk Capacity (Storage Scalability)
+
+   - The Cluster Solution:
+   - You split the data across 10 nodes in a cluster.
+     Each node only holds 5 TB. This is manageable, cheap, and fast.
+
+3. Scenario: Heavy Analytical Queries (OLAP)
+   This is common in Data Warehousing (e.g., Snowflake, BigQuery, Redshift).
+   You want to run a query: "Calculate the average sales for the last 10 years."
+
+- In a Replication setup, one single server has to scan billions of rows. It might take hours.
+- The Cluster Solution (Parallel Processing):
+  - In a cluster, the query is sent to a "Coordinator."
+  - The Coordinator splits the query into 100 small chunks and sends them to 100 nodes.
+  - Each node processes 1% of the data in parallel.
+  - Result: The query finishes in seconds instead of hours.
+
+## Q: What happens during database connection pooling and when are connections established?
+
+A:
+To understand why Connection Pooling is critical, we first need to look at what actually happens when you connect to a database.
+
+A database connection is not just a digital switch; it is a heavy, expensive network conversation.
+
+1. The Cost of a Single Connection (The "Handshake")
+   Before you can run even a simple query like SELECT 1, your application and the database must perform a complex dance. This happens every single time a physical connection is established:
+
+TCP Handshake (Network): "Hello? Are you there?" (SYN, SYN-ACK, ACK).
+
+TLS/SSL Handshake (Security): "Let's agree on encryption keys." (Exchange certificates).
+
+Authentication (Login): "Here is my password." "Password correct."
+
+Authorization (Checks): "Does this user have permission to access DB 'production'?"
+
+Resource Allocation (Memory): The database server allocates RAM (buffers/stack) for this specific user session.
+
+Result: This process can take 100ms to 500ms. If your query takes 5ms, performing this handshake for every request makes your application 95% slower than it should be.
+
+2. How Connection Pooling Solves This
+   A Connection Pool is a manager that sits between your code and the database. It maintains a "cache" of open, ready-to-use connections.
+
+Here is the exact lifecycle of a connection in a pool:
+
+A. Application Startup (The Warm-up)
+When: The moment your Node.js/Java/Python app starts running.
+
+The Pool Manager wakes up and reads your config (min: 5, max: 20).
+
+It immediately opens 5 physical connections (doing the heavy handshake described above).
+
+These 5 connections sit in an "Idle Queue", waiting for work.
+
+B. The "Borrow" Phase (Request comes in)
+When: A user hits an API endpoint that needs the DB.
+
+Request: Your code calls db.getConnection().
+
+Check: The Pool Manager looks at the "Idle Queue."
+
+Action:
+
+If Idle connections exist: It picks one, marks it as "Active/Busy", and hands it to your code. Time taken: ~0.1ms.
+
+If Queue is empty (but count < Max): It creates a new physical connection (taking the slow 200ms hit) and hands it to you.
+
+If Queue is empty (and count == Max): The request is Blocked (queued). It waits until another user finishes. If it waits too long, it throws a "Connection Timeout" error.
+
+C. The "Return" Phase (Request finishes)
+When: Your query is done, and you call connection.release() or client.end().
+
+Intercept: The connection is not physically closed. The network socket remains open.
+
+Cleanup: The Pool Manager cleans the session (rolls back uncommitted transactions, clears temporary variables).
+
+Restock: The connection is moved back from the "Active" list to the "Idle Queue," ready for the next user.
+
+3. Exactly When Are Connections Established?
+   In a pooled environment, physical connections are established only in these three specific scenarios:
+
+At Startup (Initialization):
+
+The pool opens enough connections to meet the minimum_size requirement immediately.
+
+During Traffic Spikes (Scaling Up):
+
+If all "Idle" connections are busy and the current count is less than maximum_size, the pool opens new connections on the fly.
+
+During Maintenance (Health Checks):
+
+If a connection sits idle for too long (e.g., 30 mins), the database might cut it off. The Pool Manager detects this "dead" connection, throws it away, and opens a fresh one to replace it.
+
+## Q: Can you explain the different normal forms and when to use each?
+
+Normal Form,Use Case,Pros,Cons
+1NF,Mandatory,Data is queryable.,lots of redundancy.
+2NF,Mandatory,Reduces redundancy for composite keys.,Still has transitive issues.
+3NF,The Standard,"Clean data, no duplication, high integrity.",Requires JOINs to read data (Slightly slower).
+BCNF,Strict Integrity,Handles complex edge cases.,"More tables, more complexity."
+Denormalized,Analytics / Reporting,Super fast reads (no joins).,"Data duplication, hard to update (Write heavy)."
